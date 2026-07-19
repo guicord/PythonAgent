@@ -1,3 +1,7 @@
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
 import wikipedia
 import httpx
 from bs4 import BeautifulSoup
@@ -7,23 +11,58 @@ from langchain_core.tools import tool
 
 
 class WikipediaSearchInput(BaseModel):
-	query: str = Field(description="Topic to look up on Wikipedia")
-	sentences: int = Field(default=3, ge=1, le=10, description="Number of sentences")
+    query: str = Field(description="Topic to look up on Wikipedia")
+    sentences: int = Field(default=3, ge=1, le=10, description="Number of sentences")
 
 
 class MultiplyInput(BaseModel):
-	a: float = Field(description="First number")
-	b: float = Field(description="Second number")
+    a: float = Field(description="First number")
+    b: float = Field(description="Second number")
 
 
 class DuckDuckGoSearchInput(BaseModel):
-	query: str = Field(description="Web search query")
-	max_results: int = Field(default=5, ge=1, le=10, description="Maximum result count")
+    query: str = Field(description="Web search query")
+    max_results: int = Field(default=5, ge=1, le=10, description="Maximum result count")
 
 
 class FetchWebPageInput(BaseModel):
     url: str = Field(description="Full URL of the web page to fetch")
     max_chars: int = Field(default=4000, ge=100, le=20000, description="Maximum characters of text to return")
+
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """Reject non-http(s) schemes and hosts that resolve to private/internal IPs.
+
+    Guards against SSRF: the LLM (or injected page content) could otherwise point
+    fetch_webpage at loopback, link-local (e.g. cloud metadata 169.254.169.254),
+    or private-network addresses. Returns (is_safe, reason).
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False, f"unsupported URL scheme '{parsed.scheme}' (only http/https allowed)"
+
+    host = parsed.hostname
+    if not host:
+        return False, "URL has no host"
+
+    try:
+        addr_info = socket.getaddrinfo(host, None)
+    except socket.gaierror as error:
+        return False, f"could not resolve host '{host}': {error}"
+
+    for info in addr_info:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False, f"host '{host}' resolves to a disallowed address ({ip})"
+
+    return True, ""
 
 
 @tool(args_schema=WikipediaSearchInput)
@@ -77,10 +116,31 @@ def duckduckgo_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
 def fetch_webpage(url: str, max_chars: int = 4000) -> str:
     """Fetch a web page by URL and return its readable text content."""
     print(f"\n[tool] fetch_webpage called with url='{url}'")
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; research-agent/1.0)"}
+    max_redirects = 5
+
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; research-agent/1.0)"}
-        response = httpx.get(url, headers=headers, timeout=10, follow_redirects=True)
-        response.raise_for_status()
+        # Follow redirects manually so every hop is re-validated (a public URL
+        # could otherwise redirect to an internal address, bypassing the guard).
+        current_url = url
+        with httpx.Client(follow_redirects=False, timeout=10) as client:
+            for _ in range(max_redirects + 1):
+                safe, reason = _is_safe_url(current_url)
+                if not safe:
+                    print(f"[tool] fetch_webpage blocked: {reason}")
+                    return f"Refused to fetch page: {reason}"
+
+                response = client.get(current_url, headers=headers)
+                if response.is_redirect:
+                    location = response.headers.get("location", "")
+                    current_url = str(httpx.URL(current_url).join(location))
+                    continue
+
+                response.raise_for_status()
+                break
+            else:
+                return f"Failed to fetch page: too many redirects (>{max_redirects})"
+
         soup = BeautifulSoup(response.text, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header"]):
             tag.decompose()
