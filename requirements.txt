@@ -1,0 +1,11 @@
+langchain
+wikipedia
+langchain-openai
+langchain-community
+langchain-anthropic
+python-dotenv
+pydantic
+langchain-classic
+ddgs
+httpx
+beautifulsoup4
