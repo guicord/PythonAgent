@@ -48,6 +48,7 @@ Examples:
 - `/m 3` → `/model 3`
 - `/s s` → `/show sources`
 - `/s t` → `/show tool results`
+- `/s h` → `/show history`
 
 ## Tooling
 The agent can call the following tools:
@@ -109,6 +110,27 @@ The application stores extracted source URLs from the most recent query in memor
 Behavior:
 - sources are not shown automatically in normal answer output
 - sources can be displayed on demand for the last query only
+
+## Query History
+The application keeps an in-session history of every query.
+
+Each history entry records:
+- the original query text
+- a single-line summary of the answer (the output)
+- the token cost of that query:
+  - input tokens
+  - output tokens
+  - total tokens
+
+### Show history
+- `/show history`
+- abbreviation: `/s h`
+
+Behavior:
+- lists every query made during the current session, in order
+- shows the per-query summary and token cost
+- shows the total cost (input, output, total tokens) across all queries
+- history is kept in memory for the current session only
 
 ## Output Behavior
 Normal answer output includes:

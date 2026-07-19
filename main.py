@@ -36,6 +36,13 @@ class TokenUsage(BaseModel):
     total_tokens: int = 0
 
 
+class QueryRecord(BaseModel):
+    """One entry in the session query history."""
+    query: str
+    summary: str
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+
+
 def create_llm(model_name: str) -> ChatAnthropic:
     return ChatAnthropic(
         model=model_name,
@@ -157,6 +164,44 @@ def print_tool_results(entries: list[dict[str, str]]) -> None:
         print(format_tool_result(entry["result"]))
 
 
+def summarize_answer(answer: str, max_chars: int = 120) -> str:
+    """Collapse an answer to a single-line preview for the history list."""
+    collapsed = " ".join(answer.split())
+    if len(collapsed) <= max_chars:
+        return collapsed
+    return collapsed[: max_chars - 1].rstrip() + "…"
+
+
+def total_token_usage(history: list[QueryRecord]) -> TokenUsage:
+    """Sum token usage across every recorded query."""
+    return TokenUsage(
+        input_tokens=sum(record.usage.input_tokens for record in history),
+        output_tokens=sum(record.usage.output_tokens for record in history),
+        total_tokens=sum(record.usage.total_tokens for record in history),
+    )
+
+
+def print_history(history: list[QueryRecord]) -> None:
+    if not history:
+        print("No queries in history yet.")
+        return
+
+    print(f"\nQuery history ({len(history)}):")
+    for index, record in enumerate(history, start=1):
+        print(f"\n{index}. {record.query}")
+        print(f"   Summary: {record.summary}")
+        print(
+            f"   Cost: {record.usage.total_tokens} tokens "
+            f"(in {record.usage.input_tokens}, out {record.usage.output_tokens})"
+        )
+
+    totals = total_token_usage(history)
+    print("\nTotal cost:")
+    print(f"- Input tokens: {totals.input_tokens}")
+    print(f"- Output tokens: {totals.output_tokens}")
+    print(f"- Total tokens: {totals.total_tokens}")
+
+
 def print_help() -> None:
     print("\nAvailable commands (unique prefix abbreviations work, e.g. /h, /m, /s s, /s t):")
     print("- /help                 Show this help message")
@@ -169,6 +214,7 @@ def print_help() -> None:
     print("- /model sonnet         Switch to Sonnet")
     print("- /show sources         Show sources from the last query  (abbrev: /s s)")
     print("- /show tool results    Show full tool results from the last query  (abbrev: /s t)")
+    print("- /show history         Show all queries, per-query cost, and total cost  (abbrev: /s h)")
     print("- exit or quit          Leave the chat")
 
 
@@ -195,7 +241,7 @@ def print_models(current_model: str) -> None:
 # Top-level slash commands and their unique-prefix-matchable keys.
 _TOP_COMMANDS = ["help", "model", "show"]
 # /show subcommands: keyed by first word so prefix matching is unambiguous.
-_SHOW_SUBCOMMANDS = [("sources", "sources"), ("tool", "tool results")]
+_SHOW_SUBCOMMANDS = [("sources", "sources"), ("tool", "tool results"), ("history", "history")]
 
 
 def _prefix_match(token: str, candidates: list[str]) -> str | None:
@@ -290,6 +336,7 @@ def run_chat() -> None:
     conversation: list[dict[str, str]] = []
     last_sources: list[str] = []
     last_tool_results: list[dict[str, str]] = []
+    history: list[QueryRecord] = []
 
     print("Enter your question (type 'exit' to quit, /help for commands):")
     while True:
@@ -320,6 +367,10 @@ def run_chat() -> None:
                     print_tool_results(last_tool_results)
                     continue
 
+                if cmd == "/show history":
+                    print_history(history)
+                    continue
+
                 updated_model = process_command(content, current_model)
                 if updated_model is None:
                     continue
@@ -346,6 +397,14 @@ def run_chat() -> None:
         last_tool_results = extract_tool_results(messages)
         token_usage = extract_token_usage(messages)
         print_human_readable(final_answer, tools_used, token_usage)
+
+        history.append(
+            QueryRecord(
+                query=content,
+                summary=summarize_answer(final_answer),
+                usage=token_usage,
+            )
+        )
 
         conversation.append({"role": "user", "content": content})
         conversation.append({"role": "assistant", "content": final_answer})

@@ -156,6 +156,10 @@ def test_expand_command_unknown_passes_through():
     assert main.expand_command("/xyz") == "/xyz"
 
 
+def test_expand_command_show_history_abbrev():
+    assert main.expand_command("/s h") == "/show history"
+
+
 # --------------------------------------------------------------------------- #
 # resolve_model_choice / MODEL_CHOICES
 # --------------------------------------------------------------------------- #
@@ -194,3 +198,54 @@ def test_process_command_unknown_model_keeps_current(capsys):
 def test_process_command_non_command_returns_current():
     current = "claude-sonnet-5"
     assert main.process_command("hello world", current) == current
+
+
+# --------------------------------------------------------------------------- #
+# Query history: summarize_answer / total_token_usage / print_history
+# --------------------------------------------------------------------------- #
+def _record(query, summary, in_t, out_t, total_t):
+    return main.QueryRecord(
+        query=query,
+        summary=summary,
+        usage=main.TokenUsage(input_tokens=in_t, output_tokens=out_t, total_tokens=total_t),
+    )
+
+
+def test_summarize_answer_collapses_whitespace():
+    assert main.summarize_answer("hello   world\n\nfoo") == "hello world foo"
+
+
+def test_summarize_answer_truncates_long_text():
+    out = main.summarize_answer("x" * 200, max_chars=50)
+    assert len(out) == 50 and out.endswith("…")
+
+
+def test_summarize_answer_keeps_short_text_unchanged():
+    assert main.summarize_answer("short answer", max_chars=120) == "short answer"
+
+
+def test_total_token_usage_sums_records():
+    history = [_record("q1", "s1", 10, 5, 15), _record("q2", "s2", 2, 3, 5)]
+    totals = main.total_token_usage(history)
+    assert (totals.input_tokens, totals.output_tokens, totals.total_tokens) == (12, 8, 20)
+
+
+def test_total_token_usage_empty_is_zero():
+    totals = main.total_token_usage([])
+    assert totals.total_tokens == 0
+
+
+def test_print_history_empty(capsys):
+    main.print_history([])
+    assert "No queries in history yet." in capsys.readouterr().out
+
+
+def test_print_history_lists_queries_and_total(capsys):
+    history = [_record("what is x?", "x is a thing", 10, 5, 15),
+               _record("and y?", "y is another", 2, 3, 5)]
+    main.print_history(history)
+    out = capsys.readouterr().out
+    assert "what is x?" in out and "and y?" in out          # queries listed
+    assert "x is a thing" in out                            # summaries listed
+    assert "15 tokens" in out and "5 tokens" in out         # per-query cost
+    assert "Total cost:" in out and "Total tokens: 20" in out  # grand total
